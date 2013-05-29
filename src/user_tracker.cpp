@@ -5,6 +5,18 @@
 *                                                                              *
 *******************************************************************************/
 
+/**
+ * //TODO:
+ * - implement transform publishing (call publishTransform in main loop)
+ * 
+ * //NOTE:
+ * - may not work with opengles
+ * 
+ * //REFERENCES:
+ * - integrating ROS with another wrapper library like glut
+ *   http://answers.ros.org/question/11887/significance-of-rosspinonce/
+ */
+
 #include <ros/ros.h>
 #include <ros/package.h>
 #include <tf/transform_broadcaster.h>
@@ -14,6 +26,8 @@
 #include <XnCodecIDs.h>
 #include <XnCppWrapper.h>
 #include "SceneDrawer.h"
+
+using std::string;
 
 xn::Context g_Context;
 xn::ScriptNode g_ScriptNode;
@@ -47,7 +61,7 @@ static EGLContext context = EGL_NO_CONTEXT;
 #define START_CAPTURE_CHECK_RC(rc, what)												\
 	if (nRetVal != XN_STATUS_OK)														\
 {																					\
-	printf("Failed to %s: %s\n", what, xnGetStatusString(rc));				\
+	ROS_ERROR("Failed to %s: %s\n", what, xnGetStatusString(rc));				\
 	StopCapture();															\
 	return ;																	\
 }
@@ -118,7 +132,7 @@ XnBool AssignPlayer(XnUserID user)
 	if (com.Z == 0)
 		return FALSE;
 
-	printf("Matching for existing calibration\n");
+	ROS_INFO("Matching for existing calibration\n");
 	g_UserGenerator.GetSkeletonCap().LoadCalibrationData(user, 0);
 	g_UserGenerator.GetSkeletonCap().StartTracking(user);
 	g_nPlayer = user;
@@ -129,7 +143,7 @@ void XN_CALLBACK_TYPE NewUser(xn::UserGenerator& generator, XnUserID user, void*
 {
 	if (!g_bCalibrated) // check on player0 is enough
 	{
-		printf("Look for pose\n");
+		ROS_INFO("Look for pose\n");
 		g_UserGenerator.GetPoseDetectionCap().StartPoseDetection("Psi", user);
 		return;
 	}
@@ -137,7 +151,7 @@ void XN_CALLBACK_TYPE NewUser(xn::UserGenerator& generator, XnUserID user, void*
 	AssignPlayer(user);
 // 	if (g_nPlayer == 0)
 // 	{
-// 		printf("Assigned user\n");
+// 		ROS_INFO("Assigned user\n");
 // 		g_UserGenerator.GetSkeletonCap().LoadCalibrationData(user, 0);
 // 		g_UserGenerator.GetSkeletonCap().StartTracking(user);
 // 		g_nPlayer = user;
@@ -167,7 +181,7 @@ void LostPlayer()
 }
 void XN_CALLBACK_TYPE LostUser(xn::UserGenerator& generator, XnUserID user, void* pCookie)
 {
-	printf("Lost user %d\n", user);
+	ROS_WARN("Lost user %d\n", user);
 	if (g_nPlayer == user)
 	{
 		LostPlayer();
@@ -175,19 +189,19 @@ void XN_CALLBACK_TYPE LostUser(xn::UserGenerator& generator, XnUserID user, void
 }
 void XN_CALLBACK_TYPE PoseDetected(xn::PoseDetectionCapability& pose, const XnChar* strPose, XnUserID user, void* cxt)
 {
-	printf("Found pose \"%s\" for user %d\n", strPose, user);
+	ROS_INFO("Found pose \"%s\" for user %d\n", strPose, user);
 	g_UserGenerator.GetSkeletonCap().RequestCalibration(user, TRUE);
 	g_UserGenerator.GetPoseDetectionCap().StopPoseDetection(user);
 }
 
 void XN_CALLBACK_TYPE CalibrationStarted(xn::SkeletonCapability& skeleton, XnUserID user, void* cxt)
 {
-	printf("Calibration started\n");
+	ROS_INFO("Calibration started\n");
 }
 
 void XN_CALLBACK_TYPE CalibrationCompleted(xn::SkeletonCapability& skeleton, XnUserID user, XnCalibrationStatus eStatus, void* cxt)
 {
-	printf("Calibration done [%d] %ssuccessfully\n", user, (eStatus == XN_CALIBRATION_STATUS_OK)?"":"un");
+	ROS_INFO("Calibration done [%d] %ssuccessfully\n", user, (eStatus == XN_CALIBRATION_STATUS_OK)?"":"un");
 	if (eStatus == XN_CALIBRATION_STATUS_OK)
 	{
 		if (!g_bCalibrated)
@@ -299,7 +313,7 @@ void glutKeyboard (unsigned char key, int x, int y)
 			StartCapture();
 		else
 			StopCapture();
-		printf("Record turned %s\n", g_pRecorder ? "on" : "off");
+		ROS_INFO("Record turned %s\n", g_pRecorder ? "on" : "off");
 		break;
 	}
 }
@@ -324,12 +338,10 @@ void glInit (int * pargc, char ** argv)
 }
 #endif
 
-#define SAMPLE_XML_PATH "../Sample-User.xml"
-
 #define CHECK_RC(rc, what)											\
 	if (rc != XN_STATUS_OK)											\
 	{																\
-		printf("%s failed: %s\n", what, xnGetStatusString(rc));		\
+		ROS_ERROR("%s failed: %s\n", what, xnGetStatusString(rc));		\
 		return rc;													\
 	}
 
@@ -338,20 +350,96 @@ void glInit (int * pargc, char ** argv)
 {										\
 	XnChar strError[1024];				\
 	errors.ToString(strError, 1024);	\
-	printf("%s\n", strError);			\
+	ROS_ERROR("%s\n", strError);			\
 	return (rc);						\
+}
+
+void publishTransform(XnUserID const& user, XnSkeletonJoint const& joint, string const& frame_id, string const& child_frame_id) {
+    static tf::TransformBroadcaster br;
+
+    XnSkeletonJointPosition joint_position;
+    g_UserGenerator.GetSkeletonCap().GetSkeletonJointPosition(user, joint, joint_position);
+    double x = -joint_position.position.X / 1000.0;
+    double y = joint_position.position.Y / 1000.0;
+    double z = joint_position.position.Z / 1000.0;
+
+    XnSkeletonJointOrientation joint_orientation;
+    g_UserGenerator.GetSkeletonCap().GetSkeletonJointOrientation(user, joint, joint_orientation);
+
+    XnFloat* m = joint_orientation.orientation.elements;
+    KDL::Rotation rotation(m[0], m[1], m[2],
+    					   m[3], m[4], m[5],
+    					   m[6], m[7], m[8]);
+    double qx, qy, qz, qw;
+    rotation.GetQuaternion(qx, qy, qz, qw);
+
+    char child_frame_no[128];
+    snprintf(child_frame_no, sizeof(child_frame_no), "%s_%d", child_frame_id.c_str(), user);
+
+    tf::Transform transform;
+    transform.setOrigin(tf::Vector3(x, y, z));
+    transform.setRotation(tf::Quaternion(qx, -qy, -qz, qw));
+
+    // #4994
+    tf::Transform change_frame;
+    change_frame.setOrigin(tf::Vector3(0, 0, 0));
+    tf::Quaternion frame_rotation;
+    frame_rotation.setEulerZYX(1.5708, 0, 1.5708);
+    change_frame.setRotation(frame_rotation);
+
+    transform = change_frame * transform;
+
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), frame_id, child_frame_no));
+}
+
+void publishTransforms(const std::string& frame_id) {
+    XnUserID users[15];
+    XnUInt16 users_count = 15;
+    g_UserGenerator.GetUsers(users, users_count);
+
+    for (int i = 0; i < users_count; ++i) {
+        XnUserID user = users[i];
+        if (!g_UserGenerator.GetSkeletonCap().IsTracking(user))
+            continue;
+
+
+        publishTransform(user, XN_SKEL_HEAD,           frame_id, "head");
+        publishTransform(user, XN_SKEL_NECK,           frame_id, "neck");
+        publishTransform(user, XN_SKEL_TORSO,          frame_id, "torso");
+
+        publishTransform(user, XN_SKEL_LEFT_SHOULDER,  frame_id, "left_shoulder");
+        publishTransform(user, XN_SKEL_LEFT_ELBOW,     frame_id, "left_elbow");
+        publishTransform(user, XN_SKEL_LEFT_HAND,      frame_id, "left_hand");
+
+        publishTransform(user, XN_SKEL_RIGHT_SHOULDER, frame_id, "right_shoulder");
+        publishTransform(user, XN_SKEL_RIGHT_ELBOW,    frame_id, "right_elbow");
+        publishTransform(user, XN_SKEL_RIGHT_HAND,     frame_id, "right_hand");
+
+        publishTransform(user, XN_SKEL_LEFT_HIP,       frame_id, "left_hip");
+        publishTransform(user, XN_SKEL_LEFT_KNEE,      frame_id, "left_knee");
+        publishTransform(user, XN_SKEL_LEFT_FOOT,      frame_id, "left_foot");
+
+        publishTransform(user, XN_SKEL_RIGHT_HIP,      frame_id, "right_hip");
+        publishTransform(user, XN_SKEL_RIGHT_KNEE,     frame_id, "right_knee");
+        publishTransform(user, XN_SKEL_RIGHT_FOOT,     frame_id, "right_foot");
+    }
+}
+
+void timerCallback(int value){
+	ros::spinOnce();
 }
 
 
 int main(int argc, char **argv)
 {
+	ros::init(argc, argv, "primesense_user_tracker_viewer");
+	ros::NodeHandle nh;
+	
 	XnStatus rc = XN_STATUS_OK;
 	xn::EnumerationErrors errors;
 
-//    std::string configFilename = ros::package::getPath("primesense_user_tracker") + "/openni_tracker.xml";
     std::string configFilename = ros::package::getPath("primesense_user_tracker_viewer") + "/Sample-User.xml";
 
-//	rc = g_Context.InitFromXmlFile(SAMPLE_XML_PATH, g_ScriptNode, &errors);
 	rc = g_Context.InitFromXmlFile(configFilename.c_str(), g_ScriptNode, &errors);
 	CHECK_ERRORS(rc, errors, "InitFromXmlFile");
 	CHECK_RC(rc, "InitFromXml");
@@ -364,7 +452,7 @@ int main(int argc, char **argv)
 	if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_SKELETON) ||
 		!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION))
 	{
-		printf("User generator doesn't support either skeleton or pose detection.\n");
+		ROS_WARN("User generator doesn't support either skeleton or pose detection.\n");
 		return XN_STATUS_ERROR;
 	}
 
@@ -382,17 +470,23 @@ int main(int argc, char **argv)
 	rc = g_UserGenerator.GetPoseDetectionCap().RegisterToPoseDetected(PoseDetected, NULL, hPoseCBs);
 	CHECK_RC(rc, "Register to pose detected");
 
+	// change to 25 for the timer function
+	//ros::Rate r(30);
+	ros::Rate r(25);
+
+	ros::NodeHandle pnh("~");
+	string frame_id("openni_depth_frame");
+	pnh.getParam("camera_frame_id", frame_id);
 
 	#ifdef USE_GLUT
-
 	glInit(&argc, argv);
+	glutTimerFunc(40, timerCallback, 0);
 	glutMainLoop();
 
 	#else
-
 	if (!opengles_init(GL_WIN_SIZE_X, GL_WIN_SIZE_Y, &display, &surface, &context))
 	{
-		printf("Error initing opengles\n");
+		ROS_ERROR("Error initing opengles\n");
 		CleanupExit();
 	}
 
