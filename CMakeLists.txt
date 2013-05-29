@@ -9,6 +9,16 @@ set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 include(FindPkgConfig)
 pkg_check_modules(OPENNI libopenni)
 
+include(FindGLUT)
+include_directories(${GLUT_INCLUDE_DIR})
+
 include_directories(${OPENNI_INCLUDEDIR} /usr/include/nite)
-rosbuild_add_executable(user_tracker src/user_tracker.cpp)
-target_link_libraries(user_tracker ${OPENNI_LIBRARIES})
+
+rosbuild_add_executable(user_tracker src/user_tracker.cpp 
+									src/SceneDrawer.h
+									src/SceneDrawer.cpp
+									src/kbhit.h
+									src/kbhit.cpp
+									src/signal_catch.h
+									src/signal_catch.cpp)
+target_link_libraries(user_tracker ${OPENNI_LIBRARIES} ${GLUT_LIBRARIES})

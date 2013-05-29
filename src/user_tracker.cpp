@@ -1,4 +1,9 @@
-// Taken from openni_tracker.cpp
+ /*******************************************************************************
+*                                                                              *
+*   PrimeSense NITE 1.3 - Players Sample                                       *
+*   Copyright (C) 2010 PrimeSense Ltd.                                         *
+*                                                                              *
+*******************************************************************************/
 
 #include <ros/ros.h>
 #include <ros/package.h>
@@ -8,190 +13,403 @@
 #include <XnOpenNI.h>
 #include <XnCodecIDs.h>
 #include <XnCppWrapper.h>
+#include "SceneDrawer.h"
 
-using std::string;
-
-xn::Context        g_Context;
+xn::Context g_Context;
+xn::ScriptNode g_ScriptNode;
 xn::DepthGenerator g_DepthGenerator;
-xn::UserGenerator  g_UserGenerator;
+xn::UserGenerator g_UserGenerator;
+xn::Recorder* g_pRecorder;
 
-XnBool g_bNeedPose   = FALSE;
-XnChar g_strPose[20] = "";
+XnUserID g_nPlayer = 0;
+XnBool g_bCalibrated = FALSE;
 
-void XN_CALLBACK_TYPE User_NewUser(xn::UserGenerator& generator, XnUserID nId, void* pCookie) {
-	ROS_INFO("New User %d", nId);
+#ifdef USE_GLUT
+#if (XN_PLATFORM == XN_PLATFORM_MACOSX)
+        #include <GLUT/glut.h>
+#else
+        #include <GL/glut.h>
+#endif
+#else
+//#include "opengles.h"
+#include "kbhit.h"
+#endif
+//#include "signal_catch.h"
 
-	if (g_bNeedPose)
-		g_UserGenerator.GetPoseDetectionCap().StartPoseDetection(g_strPose, nId);
-	else
-		g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
+#ifndef USE_GLUT
+static EGLDisplay display = EGL_NO_DISPLAY;
+static EGLSurface surface = EGL_NO_SURFACE;
+static EGLContext context = EGL_NO_CONTEXT;
+#endif
+
+#define GL_WIN_SIZE_X 720
+#define GL_WIN_SIZE_Y 480
+#define START_CAPTURE_CHECK_RC(rc, what)												\
+	if (nRetVal != XN_STATUS_OK)														\
+{																					\
+	printf("Failed to %s: %s\n", what, xnGetStatusString(rc));				\
+	StopCapture();															\
+	return ;																	\
 }
 
-void XN_CALLBACK_TYPE User_LostUser(xn::UserGenerator& generator, XnUserID nId, void* pCookie) {
-	ROS_INFO("Lost user %d", nId);
-}
+XnBool g_bPause = false;
+XnBool g_bRecord = false;
 
-void XN_CALLBACK_TYPE UserCalibration_CalibrationStart(xn::SkeletonCapability& capability, XnUserID nId, void* pCookie) {
-	ROS_INFO("Calibration started for user %d", nId);
-}
-
-void XN_CALLBACK_TYPE UserCalibration_CalibrationEnd(xn::SkeletonCapability& capability, XnUserID nId, XnBool bSuccess, void* pCookie) {
-	if (bSuccess) {
-		ROS_INFO("Calibration complete, start tracking user %d", nId);
-		g_UserGenerator.GetSkeletonCap().StartTracking(nId);
+XnBool g_bQuit = false;
+void StopCapture()
+{
+	g_bRecord = false;
+	if (g_pRecorder != NULL)
+	{
+		g_pRecorder->RemoveNodeFromRecording(g_DepthGenerator);
+		g_pRecorder->Release();
+		delete g_pRecorder;
 	}
-	else {
-		ROS_INFO("Calibration failed for user %d", nId);
-		if (g_bNeedPose)
-			g_UserGenerator.GetPoseDetectionCap().StartPoseDetection(g_strPose, nId);
-		else
-			g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
-	}
+	g_pRecorder = NULL;
 }
 
-void XN_CALLBACK_TYPE UserPose_PoseDetected(xn::PoseDetectionCapability& capability, XnChar const* strPose, XnUserID nId, void* pCookie) {
-    ROS_INFO("Pose %s detected for user %d", strPose, nId);
-    g_UserGenerator.GetPoseDetectionCap().StopPoseDetection(nId);
-    g_UserGenerator.GetSkeletonCap().RequestCalibration(nId, TRUE);
+void CleanupExit()
+{
+	if (g_pRecorder)
+		g_pRecorder->RemoveNodeFromRecording(g_DepthGenerator);
+	StopCapture();
+
+	exit (1);
 }
 
-void publishTransform(XnUserID const& user, XnSkeletonJoint const& joint, string const& frame_id, string const& child_frame_id) {
-    static tf::TransformBroadcaster br;
+void StartCapture()
+{
+	char recordFile[256] = {0};
+	time_t rawtime;
+	struct tm *timeinfo;
 
-    XnSkeletonJointPosition joint_position;
-    g_UserGenerator.GetSkeletonCap().GetSkeletonJointPosition(user, joint, joint_position);
-    double x = -joint_position.position.X / 1000.0;
-    double y = joint_position.position.Y / 1000.0;
-    double z = joint_position.position.Z / 1000.0;
+	time(&rawtime);
+	timeinfo = localtime(&rawtime);
+        XnUInt32 size;
+        xnOSStrFormat(recordFile, sizeof(recordFile)-1, &size,
+                 "%d_%02d_%02d[%02d_%02d_%02d].oni",
+                timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday, timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
 
-    XnSkeletonJointOrientation joint_orientation;
-    g_UserGenerator.GetSkeletonCap().GetSkeletonJointOrientation(user, joint, joint_orientation);
-
-    XnFloat* m = joint_orientation.orientation.elements;
-    KDL::Rotation rotation(m[0], m[1], m[2],
-    					   m[3], m[4], m[5],
-    					   m[6], m[7], m[8]);
-    double qx, qy, qz, qw;
-    rotation.GetQuaternion(qx, qy, qz, qw);
-
-    char child_frame_no[128];
-    snprintf(child_frame_no, sizeof(child_frame_no), "%s_%d", child_frame_id.c_str(), user);
-
-    tf::Transform transform;
-    transform.setOrigin(tf::Vector3(x, y, z));
-    transform.setRotation(tf::Quaternion(qx, -qy, -qz, qw));
-
-    // #4994
-    tf::Transform change_frame;
-    change_frame.setOrigin(tf::Vector3(0, 0, 0));
-    tf::Quaternion frame_rotation;
-    frame_rotation.setEulerZYX(1.5708, 0, 1.5708);
-    change_frame.setRotation(frame_rotation);
-
-    transform = change_frame * transform;
-
-    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), frame_id, child_frame_no));
-}
-
-void publishTransforms(const std::string& frame_id) {
-    XnUserID users[15];
-    XnUInt16 users_count = 15;
-    g_UserGenerator.GetUsers(users, users_count);
-
-    for (int i = 0; i < users_count; ++i) {
-        XnUserID user = users[i];
-        if (!g_UserGenerator.GetSkeletonCap().IsTracking(user))
-            continue;
-
-
-        publishTransform(user, XN_SKEL_HEAD,           frame_id, "head");
-        publishTransform(user, XN_SKEL_NECK,           frame_id, "neck");
-        publishTransform(user, XN_SKEL_TORSO,          frame_id, "torso");
-
-        publishTransform(user, XN_SKEL_LEFT_SHOULDER,  frame_id, "left_shoulder");
-        publishTransform(user, XN_SKEL_LEFT_ELBOW,     frame_id, "left_elbow");
-        publishTransform(user, XN_SKEL_LEFT_HAND,      frame_id, "left_hand");
-
-        publishTransform(user, XN_SKEL_RIGHT_SHOULDER, frame_id, "right_shoulder");
-        publishTransform(user, XN_SKEL_RIGHT_ELBOW,    frame_id, "right_elbow");
-        publishTransform(user, XN_SKEL_RIGHT_HAND,     frame_id, "right_hand");
-
-        publishTransform(user, XN_SKEL_LEFT_HIP,       frame_id, "left_hip");
-        publishTransform(user, XN_SKEL_LEFT_KNEE,      frame_id, "left_knee");
-        publishTransform(user, XN_SKEL_LEFT_FOOT,      frame_id, "left_foot");
-
-        publishTransform(user, XN_SKEL_RIGHT_HIP,      frame_id, "right_hip");
-        publishTransform(user, XN_SKEL_RIGHT_KNEE,     frame_id, "right_knee");
-        publishTransform(user, XN_SKEL_RIGHT_FOOT,     frame_id, "right_foot");
-    }
-}
-
-#define CHECK_RC(nRetVal, what)										\
-	if (nRetVal != XN_STATUS_OK)									\
-	{																\
-		ROS_ERROR("%s failed: %s", what, xnGetStatusString(nRetVal));\
-		return nRetVal;												\
+	if (g_pRecorder != NULL)
+	{
+		StopCapture();
 	}
 
-int main(int argc, char **argv) {
-    ros::init(argc, argv, "openni_tracker");
-    ros::NodeHandle nh;
+	XnStatus nRetVal = XN_STATUS_OK;
+	g_pRecorder = new xn::Recorder;
 
-    string configFilename = ros::package::getPath("openni_tracker") + "/openni_tracker.xml";
-    XnStatus nRetVal = g_Context.InitFromXmlFile(configFilename.c_str());
-    CHECK_RC(nRetVal, "InitFromXml");
+	g_Context.CreateAnyProductionTree(XN_NODE_TYPE_RECORDER, NULL, *g_pRecorder);
+	START_CAPTURE_CHECK_RC(nRetVal, "Create recorder");
 
-    nRetVal = g_Context.FindExistingNode(XN_NODE_TYPE_DEPTH, g_DepthGenerator);
-    CHECK_RC(nRetVal, "Find depth generator");
+	nRetVal = g_pRecorder->SetDestination(XN_RECORD_MEDIUM_FILE, recordFile);
+	START_CAPTURE_CHECK_RC(nRetVal, "set destination");
+	nRetVal = g_pRecorder->AddNodeToRecording(g_DepthGenerator, XN_CODEC_16Z_EMB_TABLES);
+	START_CAPTURE_CHECK_RC(nRetVal, "add node");
+	g_bRecord = true;
+}
 
-	nRetVal = g_Context.FindExistingNode(XN_NODE_TYPE_USER, g_UserGenerator);
-	if (nRetVal != XN_STATUS_OK) {
-		nRetVal = g_UserGenerator.Create(g_Context);
-		CHECK_RC(nRetVal, "Find user generator");
+XnBool AssignPlayer(XnUserID user)
+{
+	if (g_nPlayer != 0)
+		return FALSE;
+
+	XnPoint3D com;
+	g_UserGenerator.GetCoM(user, com);
+	if (com.Z == 0)
+		return FALSE;
+
+	printf("Matching for existing calibration\n");
+	g_UserGenerator.GetSkeletonCap().LoadCalibrationData(user, 0);
+	g_UserGenerator.GetSkeletonCap().StartTracking(user);
+	g_nPlayer = user;
+	return TRUE;
+
+}
+void XN_CALLBACK_TYPE NewUser(xn::UserGenerator& generator, XnUserID user, void* pCookie)
+{
+	if (!g_bCalibrated) // check on player0 is enough
+	{
+		printf("Look for pose\n");
+		g_UserGenerator.GetPoseDetectionCap().StartPoseDetection("Psi", user);
+		return;
 	}
 
-	if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_SKELETON)) {
-		ROS_INFO("Supplied user generator doesn't support skeleton");
-		return 1;
+	AssignPlayer(user);
+// 	if (g_nPlayer == 0)
+// 	{
+// 		printf("Assigned user\n");
+// 		g_UserGenerator.GetSkeletonCap().LoadCalibrationData(user, 0);
+// 		g_UserGenerator.GetSkeletonCap().StartTracking(user);
+// 		g_nPlayer = user;
+// 	}
+}
+void FindPlayer()
+{
+	if (g_nPlayer != 0)
+	{
+		return;
 	}
+	XnUserID aUsers[20];
+	XnUInt16 nUsers = 20;
+	g_UserGenerator.GetUsers(aUsers, nUsers);
 
-    XnCallbackHandle hUserCallbacks;
-	g_UserGenerator.RegisterUserCallbacks(User_NewUser, User_LostUser, NULL, hUserCallbacks);
+	for (int i = 0; i < nUsers; ++i)
+	{
+		if (AssignPlayer(aUsers[i]))
+			return;
+	}
+}
+void LostPlayer()
+{
+	g_nPlayer = 0;
+	FindPlayer();
 
-	XnCallbackHandle hCalibrationCallbacks;
-	g_UserGenerator.GetSkeletonCap().RegisterCalibrationCallbacks(UserCalibration_CalibrationStart, UserCalibration_CalibrationEnd, NULL, hCalibrationCallbacks);
+}
+void XN_CALLBACK_TYPE LostUser(xn::UserGenerator& generator, XnUserID user, void* pCookie)
+{
+	printf("Lost user %d\n", user);
+	if (g_nPlayer == user)
+	{
+		LostPlayer();
+	}
+}
+void XN_CALLBACK_TYPE PoseDetected(xn::PoseDetectionCapability& pose, const XnChar* strPose, XnUserID user, void* cxt)
+{
+	printf("Found pose \"%s\" for user %d\n", strPose, user);
+	g_UserGenerator.GetSkeletonCap().RequestCalibration(user, TRUE);
+	g_UserGenerator.GetPoseDetectionCap().StopPoseDetection(user);
+}
 
-	if (g_UserGenerator.GetSkeletonCap().NeedPoseForCalibration()) {
-		g_bNeedPose = TRUE;
-		if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION)) {
-			ROS_INFO("Pose required, but not supported");
-			return 1;
+void XN_CALLBACK_TYPE CalibrationStarted(xn::SkeletonCapability& skeleton, XnUserID user, void* cxt)
+{
+	printf("Calibration started\n");
+}
+
+void XN_CALLBACK_TYPE CalibrationCompleted(xn::SkeletonCapability& skeleton, XnUserID user, XnCalibrationStatus eStatus, void* cxt)
+{
+	printf("Calibration done [%d] %ssuccessfully\n", user, (eStatus == XN_CALIBRATION_STATUS_OK)?"":"un");
+	if (eStatus == XN_CALIBRATION_STATUS_OK)
+	{
+		if (!g_bCalibrated)
+		{
+			g_UserGenerator.GetSkeletonCap().SaveCalibrationData(user, 0);
+			g_nPlayer = user;
+			g_UserGenerator.GetSkeletonCap().StartTracking(user);
+			g_bCalibrated = TRUE;
 		}
 
-		XnCallbackHandle hPoseCallbacks;
-		g_UserGenerator.GetPoseDetectionCap().RegisterToPoseCallbacks(UserPose_PoseDetected, NULL, NULL, hPoseCallbacks);
+		XnUserID aUsers[10];
+		XnUInt16 nUsers = 10;
+		g_UserGenerator.GetUsers(aUsers, nUsers);
+		for (int i = 0; i < nUsers; ++i)
+			g_UserGenerator.GetPoseDetectionCap().StopPoseDetection(aUsers[i]);
+	}
+}
 
-		g_UserGenerator.GetSkeletonCap().GetCalibrationPose(g_strPose);
+void DrawProjectivePoints(XnPoint3D& ptIn, int width, double r, double g, double b)
+{
+	static XnFloat pt[3];
+
+	pt[0] = ptIn.X;
+	pt[1] = ptIn.Y;
+	pt[2] = 0;
+	glColor4f(r,
+		g,
+		b,
+		1.0f);
+	glPointSize(width);
+	glVertexPointer(3, GL_FLOAT, 0, pt);
+	glDrawArrays(GL_POINTS, 0, 1);
+
+	glFlush();
+
+}
+// this function is called each frame
+void glutDisplay (void)
+{
+
+	glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+	// Setup the OpenGL viewpoint
+	glMatrixMode(GL_PROJECTION);
+	glPushMatrix();
+	glLoadIdentity();
+
+	xn::SceneMetaData sceneMD;
+	xn::DepthMetaData depthMD;
+	g_DepthGenerator.GetMetaData(depthMD);
+	#ifdef USE_GLUT
+	glOrtho(0, depthMD.XRes(), depthMD.YRes(), 0, -1.0, 1.0);
+	#else
+	glOrthof(0, depthMD.XRes(), depthMD.YRes(), 0, -1.0, 1.0);
+	#endif
+
+	glDisable(GL_TEXTURE_2D);
+
+	if (!g_bPause)
+	{
+		// Read next available data
+		g_Context.WaitOneUpdateAll(g_DepthGenerator);
+	}
+
+		// Process the data
+		//DRAW
+		g_DepthGenerator.GetMetaData(depthMD);
+		g_UserGenerator.GetUserPixels(0, sceneMD);
+		DrawDepthMap(depthMD, sceneMD, g_nPlayer);
+
+		if (g_nPlayer != 0)
+		{
+			XnPoint3D com;
+			g_UserGenerator.GetCoM(g_nPlayer, com);
+			if (com.Z == 0)
+			{
+				g_nPlayer = 0;
+				FindPlayer();
+			}
+		}
+
+	#ifdef USE_GLUT
+	glutSwapBuffers();
+	#endif
+}
+
+#ifdef USE_GLUT
+void glutIdle (void)
+{
+	if (g_bQuit) {
+		CleanupExit();
+	}
+
+	// Display the frame
+	glutPostRedisplay();
+}
+
+void glutKeyboard (unsigned char key, int x, int y)
+{
+	switch (key)
+	{
+	case 27:
+		CleanupExit();
+	case'p':
+		g_bPause = !g_bPause;
+		break;
+	case 'k':
+		if (g_pRecorder == NULL)
+			StartCapture();
+		else
+			StopCapture();
+		printf("Record turned %s\n", g_pRecorder ? "on" : "off");
+		break;
+	}
+}
+void glInit (int * pargc, char ** argv)
+{
+	glutInit(pargc, argv);
+	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
+	glutInitWindowSize(GL_WIN_SIZE_X, GL_WIN_SIZE_Y);
+	glutCreateWindow ("PrimeSense Nite Players Viewer");
+	//glutFullScreen();
+	glutSetCursor(GLUT_CURSOR_NONE);
+
+	glutKeyboardFunc(glutKeyboard);
+	glutDisplayFunc(glutDisplay);
+	glutIdleFunc(glutIdle);
+
+	glDisable(GL_DEPTH_TEST);
+	glEnable(GL_TEXTURE_2D);
+
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glDisableClientState(GL_COLOR_ARRAY);
+}
+#endif
+
+#define SAMPLE_XML_PATH "../Sample-User.xml"
+
+#define CHECK_RC(rc, what)											\
+	if (rc != XN_STATUS_OK)											\
+	{																\
+		printf("%s failed: %s\n", what, xnGetStatusString(rc));		\
+		return rc;													\
+	}
+
+#define CHECK_ERRORS(rc, errors, what)		\
+	if (rc == XN_STATUS_NO_NODE_PRESENT)	\
+{										\
+	XnChar strError[1024];				\
+	errors.ToString(strError, 1024);	\
+	printf("%s\n", strError);			\
+	return (rc);						\
+}
+
+
+int main(int argc, char **argv)
+{
+	XnStatus rc = XN_STATUS_OK;
+	xn::EnumerationErrors errors;
+
+//    std::string configFilename = ros::package::getPath("primesense_user_tracker") + "/openni_tracker.xml";
+    std::string configFilename = ros::package::getPath("primesense_user_tracker_viewer") + "/Sample-User.xml";
+
+//	rc = g_Context.InitFromXmlFile(SAMPLE_XML_PATH, g_ScriptNode, &errors);
+	rc = g_Context.InitFromXmlFile(configFilename.c_str(), g_ScriptNode, &errors);
+	CHECK_ERRORS(rc, errors, "InitFromXmlFile");
+	CHECK_RC(rc, "InitFromXml");
+
+	rc = g_Context.FindExistingNode(XN_NODE_TYPE_DEPTH, g_DepthGenerator);
+	CHECK_RC(rc, "Find depth generator");
+	rc = g_Context.FindExistingNode(XN_NODE_TYPE_USER, g_UserGenerator);
+	CHECK_RC(rc, "Find user generator");
+
+	if (!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_SKELETON) ||
+		!g_UserGenerator.IsCapabilitySupported(XN_CAPABILITY_POSE_DETECTION))
+	{
+		printf("User generator doesn't support either skeleton or pose detection.\n");
+		return XN_STATUS_ERROR;
 	}
 
 	g_UserGenerator.GetSkeletonCap().SetSkeletonProfile(XN_SKEL_PROFILE_ALL);
 
-	nRetVal = g_Context.StartGeneratingAll();
-	CHECK_RC(nRetVal, "StartGenerating");
+	rc = g_Context.StartGeneratingAll();
+	CHECK_RC(rc, "StartGenerating");
 
-	ros::Rate r(30);
+	XnCallbackHandle hUserCBs, hCalibrationStartCB, hCalibrationCompleteCB, hPoseCBs;
+	g_UserGenerator.RegisterUserCallbacks(NewUser, LostUser, NULL, hUserCBs);
+	rc = g_UserGenerator.GetSkeletonCap().RegisterToCalibrationStart(CalibrationStarted, NULL, hCalibrationStartCB);
+	CHECK_RC(rc, "Register to calbiration start");
+	rc = g_UserGenerator.GetSkeletonCap().RegisterToCalibrationComplete(CalibrationCompleted, NULL, hCalibrationCompleteCB);
+	CHECK_RC(rc, "Register to calibration complete");
+	rc = g_UserGenerator.GetPoseDetectionCap().RegisterToPoseDetected(PoseDetected, NULL, hPoseCBs);
+	CHECK_RC(rc, "Register to pose detected");
 
-        
-        ros::NodeHandle pnh("~");
-        string frame_id("openni_depth_frame");
-        pnh.getParam("camera_frame_id", frame_id);
-                
-	while (ros::ok()) {
-		g_Context.WaitAndUpdateAll();
-		publishTransforms(frame_id);
-		r.sleep();
+
+	#ifdef USE_GLUT
+
+	glInit(&argc, argv);
+	glutMainLoop();
+
+	#else
+
+	if (!opengles_init(GL_WIN_SIZE_X, GL_WIN_SIZE_Y, &display, &surface, &context))
+	{
+		printf("Error initing opengles\n");
+		CleanupExit();
 	}
 
-	g_Context.Shutdown();
-	return 0;
+	glDisable(GL_DEPTH_TEST);
+//	glEnable(GL_TEXTURE_2D);
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glDisableClientState(GL_COLOR_ARRAY);
+
+	while ((!_kbhit()) && (!g_bQuit))
+	{
+		glutDisplay();
+		eglSwapBuffers(display, surface);
+	}
+
+	opengles_shutdown(display, surface, context);
+
+	CleanupExit();
+
+	#endif
 }
