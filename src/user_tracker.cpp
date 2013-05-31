@@ -42,6 +42,7 @@ XnBool g_bCalibrated = FALSE;
 #if (XN_PLATFORM == XN_PLATFORM_MACOSX)
         #include <GLUT/glut.h>
 #else
+        #include <GL/freeglut.h>
         #include <GL/glut.h>
 #endif
 #else
@@ -241,7 +242,7 @@ void DrawProjectivePoints(XnPoint3D& ptIn, int width, double r, double g, double
 // this function is called each frame
 void glutDisplay (void)
 {
-
+	std::cout<<"DEBUG: 1 glut display called"<<std::endl;
 	glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	// Setup the OpenGL viewpoint
@@ -262,9 +263,12 @@ void glutDisplay (void)
 
 	if (!g_bPause)
 	{
+		std::cout<<"DEBUG: 2a read next available data, bPause = 0"<<std::endl;
+
 		// Read next available data
 		g_Context.WaitOneUpdateAll(g_DepthGenerator);
 	}
+		std::cout<<"DEBUG: 2b process data, bPause = 1"<<std::endl;
 
 		// Process the data
 		//DRAW
@@ -319,16 +323,20 @@ void glutKeyboard (unsigned char key, int x, int y)
 }
 void glInit (int * pargc, char ** argv)
 {
+	std::cout<<"DEBUG: glut init"<<std::endl;
+
 	glutInit(pargc, argv);
 	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
 	glutInitWindowSize(GL_WIN_SIZE_X, GL_WIN_SIZE_Y);
-	glutCreateWindow ("PrimeSense Nite Players Viewer");
+	glutCreateWindow ("PrimeSense User Tracker Viewer");
 	//glutFullScreen();
 	glutSetCursor(GLUT_CURSOR_NONE);
 
 	glutKeyboardFunc(glutKeyboard);
 	glutDisplayFunc(glutDisplay);
 	glutIdleFunc(glutIdle);
+	glutTimerFunc(40, timerCallback, 0);
+
 
 	glDisable(GL_DEPTH_TEST);
 	glEnable(GL_TEXTURE_2D);
@@ -425,7 +433,11 @@ void publishTransforms(const std::string& frame_id) {
     }
 }
 
+//TODO: this only called once
 void timerCallback(int value){
+	std::cout<<"DEBUG: timer callback called"<<std::endl;
+
+	publishTransforms("openni_depth_frame");
 	ros::spinOnce();
 }
 
@@ -464,7 +476,7 @@ int main(int argc, char **argv)
 	XnCallbackHandle hUserCBs, hCalibrationStartCB, hCalibrationCompleteCB, hPoseCBs;
 	g_UserGenerator.RegisterUserCallbacks(NewUser, LostUser, NULL, hUserCBs);
 	rc = g_UserGenerator.GetSkeletonCap().RegisterToCalibrationStart(CalibrationStarted, NULL, hCalibrationStartCB);
-	CHECK_RC(rc, "Register to calbiration start");
+	CHECK_RC(rc, "Register to calibration start");
 	rc = g_UserGenerator.GetSkeletonCap().RegisterToCalibrationComplete(CalibrationCompleted, NULL, hCalibrationCompleteCB);
 	CHECK_RC(rc, "Register to calibration complete");
 	rc = g_UserGenerator.GetPoseDetectionCap().RegisterToPoseDetected(PoseDetected, NULL, hPoseCBs);
@@ -477,11 +489,24 @@ int main(int argc, char **argv)
 	ros::NodeHandle pnh("~");
 	string frame_id("openni_depth_frame");
 	pnh.getParam("camera_frame_id", frame_id);
-
+	//TODO: how to use frame_id as timerCallback argument?
+	
 	#ifdef USE_GLUT
 	glInit(&argc, argv);
-	glutTimerFunc(40, timerCallback, 0);
+	
+//	glutTimerFunc(40, timerCallback, 0);
 	glutMainLoop();
+	
+	
+	//TODO: glutMainLoop only called once
+	//while (ros::ok()){
+		//g_Context.WaitAndUpdateAll();
+		//Ref: http://stackoverflow.com/questions/10683925/is-it-possible-to-replace-glutmainloop-with-simple-loop
+		//glutMainLoopEvent();
+		//publishTransforms(frame_id);
+		//r.sleep();
+	//}
+	
 
 	#else
 	if (!opengles_init(GL_WIN_SIZE_X, GL_WIN_SIZE_Y, &display, &surface, &context))
