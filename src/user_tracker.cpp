@@ -7,6 +7,11 @@
 
 /**
  * //TODO:
+ * - test publishing rate, is it synchronized or not
+ * - add SIGINT handler with ros::ok()
+ * - add info, which key for which function
+ * 
+ * //DONE:
  * - implement transform publishing (call publishTransform in main loop)
  * 
  * //NOTE:
@@ -28,6 +33,8 @@
 #include "SceneDrawer.h"
 
 using std::string;
+
+bool g_bDebug = false;
 
 xn::Context g_Context;
 xn::ScriptNode g_ScriptNode;
@@ -242,7 +249,7 @@ void DrawProjectivePoints(XnPoint3D& ptIn, int width, double r, double g, double
 // this function is called each frame
 void glutDisplay (void)
 {
-	std::cout<<"DEBUG: 1 glut display called"<<std::endl;
+	if (g_bDebug) std::cout<<"DEBUG: 1 glut display called"<<std::endl;
 	glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	// Setup the OpenGL viewpoint
@@ -263,12 +270,12 @@ void glutDisplay (void)
 
 	if (!g_bPause)
 	{
-		std::cout<<"DEBUG: 2a read next available data, bPause = 0"<<std::endl;
+		if (g_bDebug) std::cout<<"DEBUG: 2a read next available data, bPause = 0"<<std::endl;
 
 		// Read next available data
 		g_Context.WaitOneUpdateAll(g_DepthGenerator);
 	}
-		std::cout<<"DEBUG: 2b process data, bPause = 1"<<std::endl;
+		if (g_bDebug) std::cout<<"DEBUG: 2b process data, bPause = 1"<<std::endl;
 
 		// Process the data
 		//DRAW
@@ -292,75 +299,6 @@ void glutDisplay (void)
 	#endif
 }
 
-#ifdef USE_GLUT
-void glutIdle (void)
-{
-	if (g_bQuit) {
-		CleanupExit();
-	}
-
-	// Display the frame
-	glutPostRedisplay();
-}
-
-void glutKeyboard (unsigned char key, int x, int y)
-{
-	switch (key)
-	{
-	case 27:
-		CleanupExit();
-	case'p':
-		g_bPause = !g_bPause;
-		break;
-	case 'k':
-		if (g_pRecorder == NULL)
-			StartCapture();
-		else
-			StopCapture();
-		ROS_INFO("Record turned %s\n", g_pRecorder ? "on" : "off");
-		break;
-	}
-}
-void glInit (int * pargc, char ** argv)
-{
-	std::cout<<"DEBUG: glut init"<<std::endl;
-
-	glutInit(pargc, argv);
-	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
-	glutInitWindowSize(GL_WIN_SIZE_X, GL_WIN_SIZE_Y);
-	glutCreateWindow ("PrimeSense User Tracker Viewer");
-	//glutFullScreen();
-	glutSetCursor(GLUT_CURSOR_NONE);
-
-	glutKeyboardFunc(glutKeyboard);
-	glutDisplayFunc(glutDisplay);
-	glutIdleFunc(glutIdle);
-	glutTimerFunc(40, timerCallback, 0);
-
-
-	glDisable(GL_DEPTH_TEST);
-	glEnable(GL_TEXTURE_2D);
-
-	glEnableClientState(GL_VERTEX_ARRAY);
-	glDisableClientState(GL_COLOR_ARRAY);
-}
-#endif
-
-#define CHECK_RC(rc, what)											\
-	if (rc != XN_STATUS_OK)											\
-	{																\
-		ROS_ERROR("%s failed: %s\n", what, xnGetStatusString(rc));		\
-		return rc;													\
-	}
-
-#define CHECK_ERRORS(rc, errors, what)		\
-	if (rc == XN_STATUS_NO_NODE_PRESENT)	\
-{										\
-	XnChar strError[1024];				\
-	errors.ToString(strError, 1024);	\
-	ROS_ERROR("%s\n", strError);			\
-	return (rc);						\
-}
 
 void publishTransform(XnUserID const& user, XnSkeletonJoint const& joint, string const& frame_id, string const& child_frame_id) {
     static tf::TransformBroadcaster br;
@@ -433,14 +371,88 @@ void publishTransforms(const std::string& frame_id) {
     }
 }
 
+
+
 //TODO: this only called once
+//DONE: this has to be called recursively
 void timerCallback(int value){
-	std::cout<<"DEBUG: timer callback called"<<std::endl;
+	if (g_bDebug) std::cout<<"DEBUG: timer callback called"<<std::endl;
 
 	publishTransforms("openni_depth_frame");
 	ros::spinOnce();
+	
+	glutTimerFunc(40, timerCallback, 0);
 }
 
+#ifdef USE_GLUT
+void glutIdle (void)
+{
+	if (g_bQuit) {
+		CleanupExit();
+	}
+
+	// Display the frame
+	glutPostRedisplay();
+}
+
+void glutKeyboard (unsigned char key, int x, int y)
+{
+	switch (key)
+	{
+	case 27:
+		CleanupExit();
+	case'p':
+		g_bPause = !g_bPause;
+		break;
+	case 'k':
+		if (g_pRecorder == NULL)
+			StartCapture();
+		else
+			StopCapture();
+		ROS_INFO("Record turned %s\n", g_pRecorder ? "on" : "off");
+		break;
+	}
+}
+void glInit (int * pargc, char ** argv)
+{
+	if (g_bDebug) std::cout<<"DEBUG: glut init"<<std::endl;
+
+	glutInit(pargc, argv);
+	glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
+	glutInitWindowSize(GL_WIN_SIZE_X, GL_WIN_SIZE_Y);
+	glutCreateWindow ("PrimeSense User Tracker Viewer");
+	//glutFullScreen();
+	glutSetCursor(GLUT_CURSOR_NONE);
+
+	glutKeyboardFunc(glutKeyboard);
+	glutDisplayFunc(glutDisplay);
+	glutIdleFunc(glutIdle);
+	//glutTimerFunc(40, timerCallback, 0);
+
+
+	glDisable(GL_DEPTH_TEST);
+	glEnable(GL_TEXTURE_2D);
+
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glDisableClientState(GL_COLOR_ARRAY);
+}
+#endif
+
+#define CHECK_RC(rc, what)											\
+	if (rc != XN_STATUS_OK)											\
+	{																\
+		ROS_ERROR("%s failed: %s\n", what, xnGetStatusString(rc));		\
+		return rc;													\
+	}
+
+#define CHECK_ERRORS(rc, errors, what)		\
+	if (rc == XN_STATUS_NO_NODE_PRESENT)	\
+{										\
+	XnChar strError[1024];				\
+	errors.ToString(strError, 1024);	\
+	ROS_ERROR("%s\n", strError);			\
+	return (rc);						\
+}
 
 int main(int argc, char **argv)
 {
@@ -494,7 +506,7 @@ int main(int argc, char **argv)
 	#ifdef USE_GLUT
 	glInit(&argc, argv);
 	
-//	glutTimerFunc(40, timerCallback, 0);
+	glutTimerFunc(40, timerCallback, 0);
 	glutMainLoop();
 	
 	
