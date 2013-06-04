@@ -306,7 +306,7 @@ void publishTransform(XnUserID const& user, XnSkeletonJoint const& joint, string
 
     XnSkeletonJointPosition joint_position;
     g_UserGenerator.GetSkeletonCap().GetSkeletonJointPosition(user, joint, joint_position);
-    double x = -joint_position.position.X / 1000.0;
+    double x = joint_position.position.X / 1000.0;
     double y = joint_position.position.Y / 1000.0;
     double z = joint_position.position.Z / 1000.0;
 
