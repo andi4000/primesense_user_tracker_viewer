@@ -151,7 +151,8 @@ void XN_CALLBACK_TYPE NewUser(xn::UserGenerator& generator, XnUserID user, void*
 {
 	if (!g_bCalibrated) // check on player0 is enough
 	{
-		ROS_INFO("Look for pose\n");
+		//ROS_INFO("Look for pose\n");
+		ROS_INFO("New user %d\n", user);
 		g_UserGenerator.GetPoseDetectionCap().StartPoseDetection("Psi", user);
 		return;
 	}
@@ -204,12 +205,12 @@ void XN_CALLBACK_TYPE PoseDetected(xn::PoseDetectionCapability& pose, const XnCh
 
 void XN_CALLBACK_TYPE CalibrationStarted(xn::SkeletonCapability& skeleton, XnUserID user, void* cxt)
 {
-	ROS_INFO("Calibration started\n");
+	ROS_INFO("Calibration started for user %d\n", user);
 }
 
 void XN_CALLBACK_TYPE CalibrationCompleted(xn::SkeletonCapability& skeleton, XnUserID user, XnCalibrationStatus eStatus, void* cxt)
 {
-	ROS_INFO("Calibration done [%d] %ssuccessfully\n", user, (eStatus == XN_CALIBRATION_STATUS_OK)?"":"un");
+	ROS_INFO("Calibration done for user %d %ssuccessfully\n", user, (eStatus == XN_CALIBRATION_STATUS_OK)?"":"un");
 	if (eStatus == XN_CALIBRATION_STATUS_OK)
 	{
 		if (!g_bCalibrated)
